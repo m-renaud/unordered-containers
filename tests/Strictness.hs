@@ -8,7 +8,7 @@ import Test.ChasingBottoms.IsBottom
 import Test.Framework (Test, defaultMain, testGroup)
 import Test.Framework.Providers.QuickCheck2 (testProperty)
 import Test.QuickCheck (Arbitrary(arbitrary), Property, (===), (.&&.))
-import Test.QuickCheck.Function
+import Test.QuickCheck.Function (Fun(Fun), Function(function), functionMap)
 import Test.QuickCheck.Poly (A)
 import Data.Maybe (fromMaybe, isJust)
 import Control.Arrow (second)
@@ -27,6 +27,9 @@ import qualified Data.HashMap.Strict as HM
 newtype Key = K { unK :: Int }
             deriving (Arbitrary, Eq, Ord, Show)
 
+instance Function Key where
+    function = functionMap unK K
+
 instance Hashable Key where
     hashWithSalt salt k = hashWithSalt salt (unK k) `mod` 20
 
@@ -39,6 +42,16 @@ instance Show (Int -> Int) where
 
 instance Show (Int -> Int -> Int) where
     show _ = "<function>"
+
+-- | Extracts the value of a ternary function.
+-- Copied from Test.QuickCheck.Function.applyFun3
+applyFun2 :: Fun (a, b) c -> (a -> b -> c)
+applyFun2 (Fun _ f) a b = f (a, b)
+
+-- | Extracts the value of a ternary function.
+-- Copied from Test.QuickCheck.Function.applyFun3
+applyFun3 :: Fun (a, b, c) d -> (a -> b -> c -> d)
+applyFun3 (Fun _ f) a b c = f (a, b, c)
 
 ------------------------------------------------------------------------
 -- * Properties
@@ -130,11 +143,11 @@ pFromListWithValueResultStrict lst comb_lazy calc_good_raw
     calc_good Nothing y@(Just _) = cgr Nothing Nothing || cgr Nothing y
     calc_good x@(Just _) Nothing = cgr Nothing Nothing || cgr x Nothing
     calc_good x y = cgr Nothing Nothing || cgr Nothing y || cgr x Nothing || cgr x y
-    cgr = curry $ apply calc_good_raw
+    cgr = applyFun2 calc_good_raw
 
     -- The Maybe A -> Maybe A -> Maybe A that we're after, representing a
     -- potentially less total function than comb_lazy
-    comb x y = apply comb_lazy (x, y) <$ guard (calc_good x y)
+    comb x y = applyFun2 comb_lazy x y <$ guard (calc_good x y)
 
     -- What we get out of the conversion using fromListWith
     real_map = HM.fromListWith real_comb real_list
@@ -144,6 +157,68 @@ pFromListWithValueResultStrict lst comb_lazy calc_good_raw
 
     -- A genuinely partial function mirroring comb
     real_comb x y = fromMaybe bottom $ comb (recover x) (recover y)
+
+    recover :: a -> Maybe a
+    recover a = a <$ guard (not $ isBottom a)
+
+pFromListWithKeyKeyStrict :: Fun (Key, Int, Int) Int -> Bool
+pFromListWithKeyKeyStrict f =
+    isBottom $ HM.fromListWithKey (applyFun3 f) [(undefined :: Key, 1 :: Int)]
+
+-- The strictness properties of 'fromListWith' are not entirely
+-- trivial.
+-- fromListWith f kvs is strict in the first value seen for each
+-- key, but potentially lazy in the rest: the combining function
+-- could be lazy in the "new" value. fromListWith must, however,
+-- be strict in whatever value is actually inserted into the map.
+-- Getting all these properties specified efficiently seems tricky.
+-- Since it's not hard, we verify that the converted HashMap has
+-- no unforced values. Rather than trying to go into detail for the
+-- rest, this test compares the strictness behavior of fromListWith
+-- to that of insertWith. The latter should be easier to specify
+-- and (if we choose to do so) test thoroughly.
+--
+-- We'll fake up a representation of things that are possibly
+-- bottom by using Nothing to represent bottom. The combining
+-- (partial) function is represented by a "lazy total" function
+-- Maybe a -> Maybe a -> Maybe a, along with a function determining
+-- whether the result should be non-bottom, Maybe a -> Maybe a -> Bool,
+-- indicating how the combining function should behave if neither
+-- argument, just the first argument, just the second argument,
+-- or both arguments are bottom. It would be quite tempting to
+-- just use Maybe A -> Maybe A -> Maybe A, but that would not
+-- necessarily be continous.
+pFromListWithKeyValueResultStrict :: [(Key, Maybe A)]
+                                  -> Fun (Key, Maybe A, Maybe A) A
+                                  -> Fun (Key, Maybe A, Maybe A) Bool
+                                  -> Property
+pFromListWithKeyValueResultStrict lst comb_lazy calc_good_raw
+         = all (all isJust) recovered .&&. (recovered === recover (fmap recover fake_map))
+  where
+    recovered :: Maybe (HashMap Key (Maybe A))
+    recovered = recover (fmap recover real_map)
+    -- What we get out of the conversion using insertWith
+    fake_map = foldl' (\m (k,v) -> HM.insertWithKey real_comb k v m) HM.empty real_list
+
+    -- A continuous version of calc_good_raw
+    calc_good k Nothing Nothing = cgr k Nothing Nothing
+    calc_good k Nothing y@(Just _) = cgr k Nothing Nothing || cgr k Nothing y
+    calc_good k x@(Just _) Nothing = cgr k Nothing Nothing || cgr k x Nothing
+    calc_good k x y = cgr k Nothing Nothing || cgr k Nothing y || cgr k x Nothing || cgr k x y
+    cgr = applyFun3 calc_good_raw
+
+    -- The Maybe A -> Maybe A -> Maybe A that we're after, representing a
+    -- potentially less total function than comb_lazy
+    comb k x y = applyFun3 comb_lazy k x y <$ guard (calc_good k x y)
+
+    -- What we get out of the conversion using fromListWithKey
+    real_map = HM.fromListWithKey real_comb real_list
+
+    -- A list that may have actual bottom values in it.
+    real_list = map (second (fromMaybe bottom)) lst
+
+    -- A genuinely partial function mirroring comb
+    real_comb k x y = fromMaybe bottom $ comb (recover x) (recover y)
 
     recover :: a -> Maybe a
     recover a = a <$ guard (not $ isBottom a)
@@ -173,6 +248,8 @@ tests =
       , testProperty "fromList is value-strict" pFromListValueStrict
       , testProperty "fromListWith is key-strict" pFromListWithKeyStrict
       , testProperty "fromListWith is value-strict" pFromListWithValueResultStrict
+      , testProperty "fromListWithKey is key-strict" pFromListWithKeyKeyStrict
+      , testProperty "fromListWithKey is value-strict" pFromListWithKeyValueResultStrict
       ]
     ]
 
