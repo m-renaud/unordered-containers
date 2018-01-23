@@ -17,16 +17,30 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.HashMap.Lazy as HM
 #endif
 import qualified Data.Map as M
-import Test.QuickCheck (Arbitrary, Property, (==>), (===))
+import Test.QuickCheck (Arbitrary, CoArbitrary, Property, (==>), (===))
+import Test.QuickCheck.Function (Fun(Fun), Function(function), functionMap)
 import Test.Framework (Test, defaultMain, testGroup)
 import Test.Framework.Providers.QuickCheck2 (testProperty)
 
 -- Key type that generates more hash collisions.
 newtype Key = K { unK :: Int }
-            deriving (Arbitrary, Eq, Ord, Read, Show)
+            deriving (Arbitrary, CoArbitrary, Eq, Ord, Read, Show)
+
+instance Function Key where
+    function = functionMap unK K
 
 instance Hashable Key where
     hashWithSalt salt k = hashWithSalt salt (unK k) `mod` 20
+
+-- | Extracts the value of a ternary function.
+-- Copied from Test.QuickCheck.Function.applyFun3
+applyFun2 :: Fun (a, b) c -> (a -> b -> c)
+applyFun2 (Fun _ f) a b = f (a, b)
+
+-- | Extracts the value of a ternary function.
+-- Copied from Test.QuickCheck.Function.applyFun3
+applyFun3 :: Fun (a, b, c) d -> (a -> b -> c -> d)
+applyFun3 (Fun _ f) a b c = f (a, b, c)
 
 ------------------------------------------------------------------------
 -- * Properties
@@ -270,9 +284,15 @@ pFilterWithKey = M.filterWithKey p `eq_` HM.filterWithKey p
 pFromList :: [(Key, Int)] -> Bool
 pFromList = id `eq_` id
 
-pFromListWith :: [(Key, Int)] -> Bool
-pFromListWith kvs = (M.toAscList $ M.fromListWith (+) kvs) ==
-                    (toAscList $ HM.fromListWith (+) kvs)
+pFromListWith :: Fun (Int, Int) Int -> [(Key, Int)] -> Bool
+pFromListWith f kvs =
+  (M.toAscList $ M.fromListWith (applyFun2 f) kvs) ==
+  (toAscList $ HM.fromListWith (applyFun2 f) kvs)
+
+pFromListWithKey :: Fun (Key, Int, Int) Int -> [(Key, Int)] -> Bool
+pFromListWithKey f kvs =
+  (M.toAscList $ M.fromListWithKey (applyFun3 f) kvs) ==
+  (toAscList $ HM.fromListWithKey (applyFun3 f) kvs)
 
 pToList :: [(Key, Int)] -> Bool
 pToList = M.toAscList `eq` toAscList
@@ -351,6 +371,7 @@ tests =
       , testProperty "keys" pKeys
       , testProperty "fromList" pFromList
       , testProperty "fromListWith" pFromListWith
+      , testProperty "fromListWithKey" pFromListWithKey
       , testProperty "toList" pToList
       ]
     ]
