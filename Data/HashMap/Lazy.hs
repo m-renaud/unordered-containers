@@ -86,6 +86,7 @@ module Data.HashMap.Lazy
     , toList
     , fromList
     , fromListWith
+    , fromListWithKey
     ) where
 
 import Data.HashMap.Base as HM

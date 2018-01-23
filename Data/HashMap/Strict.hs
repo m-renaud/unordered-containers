@@ -86,6 +86,7 @@ module Data.HashMap.Strict
     , toList
     , fromList
     , fromListWith
+    , fromListWithKey
     ) where
 
 import Data.Bits ((.&.), (.|.))
